@@ -182,21 +182,24 @@ class FlutterSecureStorageWeb extends FlutterSecureStoragePlatform {
       final legacyKeyB64 = storage.getItem(keyName);
 
       if (legacyKeyB64 != null) {
-        // Migrate: generate new non-extractable key, re-encrypt all values.
-        final newKey = await _generateNonExtractableKey(algorithm);
-        await _migrateLegacyKey(
-          legacyKeyB64,
-          newKey,
-          algorithm,
-          options,
-          storage,
-          keyName,
-        );
-        await _storeKeyInIdb(db, keyName, newKey);
-        storage.removeItem(keyName); // Delete legacy key from localStorage.
-        _keyCache[dbName] = newKey;
-        return newKey;
-      }
+          // Migrate: import the same key bytes as non-extractable and move
+          // to IndexedDB. Existing ciphertexts remain valid (same key
+          // material), we just store it more securely.
+          final legacyBytes = base64Decode(legacyKeyB64);
+          final migratedKey = await _crypto.subtle
+              .importKey(
+                'raw',
+                legacyBytes.toJS,
+                algorithm,
+                false, // extractable: false — the whole point
+                ['encrypt', 'decrypt'].toJS,
+              )
+              .toDart;
+          await _storeKeyInIdb(db, keyName, migratedKey);
+          storage.removeItem(keyName); // Delete raw key from localStorage.
+          _keyCache[dbName] = migratedKey;
+          return migratedKey;
+        }
 
       // No key anywhere — generate a fresh non-extractable key.
       final newKey = await _generateNonExtractableKey(algorithm);
@@ -215,88 +218,6 @@ class FlutterSecureStorageWeb extends FlutterSecureStoragePlatform {
     return (await _crypto.subtle
         .generateKey(algorithm, false, ['encrypt', 'decrypt'].toJS)
         .toDart)! as web.CryptoKey;
-  }
-
-  /// Migrates all values encrypted with the legacy (extractable) key to a
-  /// new non-extractable key.
-  Future<void> _migrateLegacyKey(
-    String legacyKeyB64,
-    web.CryptoKey newKey,
-    js_interop.JSAny algorithm,
-    Map<String, String> options,
-    web.Storage storage,
-    String keyName,
-  ) async {
-    // Import the legacy key (extractable, since we have the raw bytes).
-    final legacyBytes = base64Decode(legacyKeyB64);
-    final legacyKey = await _crypto.subtle
-        .importKey(
-          'raw',
-          legacyBytes.toJS,
-          algorithm,
-          false,
-          ['decrypt'].toJS,
-        )
-        .toDart;
-
-    // Find all encrypted values in storage.
-    final prefix = '$keyName.';
-    final keysToMigrate = <String>[];
-    for (var j = 0; j < storage.length; j++) {
-      final k = storage.key(j) ?? '';
-      if (k.startsWith(prefix)) {
-        keysToMigrate.add(k);
-      }
-    }
-
-    // Re-encrypt each value: decrypt with legacy key, encrypt with new key.
-    for (final storageKey in keysToMigrate) {
-      final cipherText = storage.getItem(storageKey);
-      if (cipherText == null) continue;
-
-      try {
-        final parts = cipherText.split('.');
-        if (parts.length != 2) continue;
-
-        final oldIv = base64Decode(parts[0]);
-        final oldCipher = base64Decode(parts[1]);
-
-        // Decrypt with legacy key.
-        final decrypted = await _crypto.subtle
-            .decrypt(
-              _getAlgorithm(oldIv),
-              legacyKey,
-              Uint8List.fromList(oldCipher).toJS,
-            )
-            .toDart;
-
-        // Encrypt with new key using fresh IV.
-        final newIv =
-            (_crypto.getRandomValues(Uint8List(12).toJS)
-                    as js_interop.JSUint8Array)
-                .toDart;
-        final newAlgorithm = _getAlgorithm(newIv);
-        final encrypted = (await _crypto.subtle
-            .encrypt(
-              newAlgorithm,
-              newKey,
-              (decrypted! as js_interop.JSArrayBuffer).toDart.asUint8List().toJS,
-            )
-            .toDart)! as js_interop.JSArrayBuffer;
-
-        final encoded = '${base64Encode(newIv)}.'
-            '${base64Encode(encrypted.toDart.asUint8List())}';
-        storage.setItem(storageKey, encoded);
-      } on Exception catch (e, s) {
-        // If a single value fails to migrate, log and continue.
-        // The value will be unreadable (wrong key) — same as data loss,
-        // but better than blocking migration of all other values.
-        if (kDebugMode) {
-          print('Migration failed for $storageKey: $e');
-          debugPrintStack(stackTrace: s);
-        }
-      }
-    }
   }
 
   /// Legacy wrapKey support. When a wrapKey is provided, we can't use
