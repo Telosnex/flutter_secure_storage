@@ -179,51 +179,41 @@ TEST_F(ShouldSkipKeyringWarmupTest, NotSandboxedRunsWarmup) {
   EXPECT_FALSE(shouldSkipKeyringWarmup(kMissingPath, nullptr, nullptr, true));
 }
 
-TEST_F(ShouldSkipKeyringWarmupTest, SandboxedWithoutServiceSkips) {
+TEST_F(ShouldSkipKeyringWarmupTest, SandboxedWithPortalSkips) {
   EXPECT_TRUE(shouldSkipKeyringWarmup(existing_path_.c_str(), nullptr, nullptr,
-                                      false));
-  EXPECT_TRUE(shouldSkipKeyringWarmup(kMissingPath, "my-snap", nullptr, false));
+                                      true));
+  EXPECT_TRUE(shouldSkipKeyringWarmup(kMissingPath, "my-snap", nullptr, true));
 }
 
-TEST_F(ShouldSkipKeyringWarmupTest, SandboxedWithServiceRunsWarmup) {
-  EXPECT_FALSE(shouldSkipKeyringWarmup(existing_path_.c_str(), nullptr, nullptr,
-                                       true));
-  EXPECT_FALSE(shouldSkipKeyringWarmup(kMissingPath, "my-snap", nullptr, true));
+// libsecret treats a set but empty SNAP_NAME as a Snap.
+TEST_F(ShouldSkipKeyringWarmupTest, EmptySnapNameIsSandboxed) {
+  EXPECT_TRUE(shouldSkipKeyringWarmup(kMissingPath, "", nullptr, true));
 }
 
-TEST_F(ShouldSkipKeyringWarmupTest, EmptySnapNameIsNotSandboxed) {
-  EXPECT_FALSE(shouldSkipKeyringWarmup(kMissingPath, "", nullptr, false));
+TEST_F(ShouldSkipKeyringWarmupTest, SandboxedWithoutPortalRunsWarmup) {
+  EXPECT_FALSE(shouldSkipKeyringWarmup(existing_path_.c_str(), nullptr,
+                                       nullptr, false));
+  EXPECT_FALSE(shouldSkipKeyringWarmup(kMissingPath, "my-snap", nullptr, false));
 }
 
-TEST_F(ShouldSkipKeyringWarmupTest, SecretBackendFileForcesSkip) {
-  EXPECT_TRUE(shouldSkipKeyringWarmup(kMissingPath, nullptr, "file", true));
-}
-
-TEST_F(ShouldSkipKeyringWarmupTest, SecretBackendServiceForcesWarmup) {
-  EXPECT_FALSE(
-      shouldSkipKeyringWarmup(existing_path_.c_str(), "my-snap", "service",
-                              false));
-}
-
-TEST_F(ShouldSkipKeyringWarmupTest, UnrecognizedSecretBackendFallsBackToDetection) {
+// In a sandbox with the portal, libsecret ignores SECRET_BACKEND.
+TEST_F(ShouldSkipKeyringWarmupTest, SandboxedWithPortalIgnoresSecretBackend) {
+  EXPECT_TRUE(shouldSkipKeyringWarmup(kMissingPath, "my-snap", "service", true));
   EXPECT_TRUE(shouldSkipKeyringWarmup(existing_path_.c_str(), nullptr,
-                                      "something-else", false));
-  EXPECT_FALSE(shouldSkipKeyringWarmup(kMissingPath, nullptr, "something-else",
-                                       false));
+                                      "service", true));
 }
 
-// Exercises the real D-Bus call against whatever session bus this process is
-// connected to. Skipped unless CI points FSS_EXPECT_SECRET_SERVICE_REACHABLE
-// at a specific bus policy (see the "Verify Secret Service Reachability"
-// steps in ci.yml), since the answer otherwise depends on the environment.
-TEST(SecretServiceOnSessionBusTest, MatchesConfiguredBusPolicy) {
-  const char *expected = g_getenv("FSS_EXPECT_SECRET_SERVICE_REACHABLE");
-  if (expected == nullptr) {
-    GTEST_SKIP() << "set FSS_EXPECT_SECRET_SERVICE_REACHABLE=0|1 to run this "
-                    "against a specific D-Bus policy";
-  }
-  const bool want = std::string(expected) == "1";
-  EXPECT_EQ(secretServiceOnSessionBus(), want);
+TEST_F(ShouldSkipKeyringWarmupTest, SecretBackendFileSkips) {
+  EXPECT_TRUE(shouldSkipKeyringWarmup(kMissingPath, nullptr, "file", false));
+  EXPECT_TRUE(shouldSkipKeyringWarmup(kMissingPath, "my-snap", "file", false));
+}
+
+TEST_F(ShouldSkipKeyringWarmupTest, OtherSecretBackendRunsWarmup) {
+  EXPECT_FALSE(shouldSkipKeyringWarmup(kMissingPath, nullptr, "service", true));
+  EXPECT_FALSE(shouldSkipKeyringWarmup(kMissingPath, nullptr, "something-else",
+                                       true));
+  EXPECT_FALSE(shouldSkipKeyringWarmup(kMissingPath, "my-snap", "service",
+                                       false));
 }
 
 // setLabel() used to leave the_schema.name pointing at label's old buffer.
@@ -247,6 +237,12 @@ TEST(SecretStorageSchemaNameTest, SchemaNameTracksLabelAfterRelabel) {
 class SchemaMigrationTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    // The migration reads the Secret Service. With the file backend it does
+    // not run, and that backend does not keep items with different schema
+    // names apart.
+    if (shouldSkipKeyringWarmup()) {
+      GTEST_SKIP() << "legacy schema migration needs the Secret Service backend";
+    }
     legacy_ = std::make_unique<SecretStorage>("fss_migration_test.legacy_schema");
     legacy_->addAttribute("account", "fss_migration_test.secureStorage");
     legacy_->deleteKeyring();
@@ -257,8 +253,8 @@ class SchemaMigrationTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    legacy_->deleteKeyring();
-    current_->deleteKeyring();
+    if (legacy_) legacy_->deleteKeyring();
+    if (current_) current_->deleteKeyring();
   }
 
   std::unique_ptr<SecretStorage> legacy_;
