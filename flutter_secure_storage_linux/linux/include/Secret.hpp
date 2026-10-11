@@ -9,22 +9,26 @@
 #define secret_autofree _GLIB_CLEANUP(secret_cleanup_free)
 static inline void secret_cleanup_free(gchar **p) { secret_password_free(*p); }
 
-// True when the process runs inside a Flatpak or Snap sandbox, where libsecret's
-// Simple API (secret_password_*) can route to the portal file backend instead of
-// org.freedesktop.secrets.
+// True when libsecret treats the process as sandboxed. libsecret checks
+// /.flatpak-info for Flatpak and, since 0.20.5, the SNAP_NAME variable for
+// Snap. Any value of SNAP_NAME counts, including an empty one.
 inline bool isSandboxedContainer(const char *flatpakInfoPath,
                                  const char *snapName) {
-  if (snapName != nullptr && snapName[0] != '\0') {
+#if defined(SECRET_CHECK_VERSION)
+#if SECRET_CHECK_VERSION(0, 20, 5)
+  if (snapName != nullptr) {
     return true;
   }
+#endif
+#endif
   return flatpakInfoPath != nullptr &&
          g_file_test(flatpakInfoPath, G_FILE_TEST_EXISTS);
 }
 
-// Whether org.freedesktop.secrets currently has an owner on the session bus.
-// A single NameHasOwner call to the bus daemon, far cheaper than
-// secret_service_get_sync (no session negotiation, no collection load).
-inline bool secretServiceOnSessionBus() {
+// Whether the Secret portal is at the version that libsecret's file backend
+// requires. This is the same call as libsecret's
+// _secret_file_backend_check_portal_version(), so both give the same answer.
+inline bool secretPortalAvailable() {
   g_autoptr(GError) err = nullptr;
   g_autoptr(GDBusConnection) bus =
       g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &err);
@@ -33,52 +37,51 @@ inline bool secretServiceOnSessionBus() {
   }
 
   g_autoptr(GVariant) reply = g_dbus_connection_call_sync(
-      bus, "org.freedesktop.DBus", "/org/freedesktop/DBus",
-      "org.freedesktop.DBus", "NameHasOwner",
-      g_variant_new("(s)", "org.freedesktop.secrets"), G_VARIANT_TYPE("(b)"),
-      G_DBUS_CALL_FLAGS_NONE, /*timeout_msec=*/1000, nullptr, &err);
+      bus, "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+      "org.freedesktop.DBus.Properties", "Get",
+      g_variant_new("(ss)", "org.freedesktop.portal.Secret", "version"),
+      G_VARIANT_TYPE("(v)"), G_DBUS_CALL_FLAGS_NONE, -1, nullptr, &err);
   if (reply == nullptr) {
     return false;
   }
 
-  gboolean has_owner = FALSE;
-  g_variant_get(reply, "(b)", &has_owner);
-  return has_owner;
+  g_autoptr(GVariant) version = nullptr;
+  g_variant_get(reply, "(v)", &version);
+  return g_variant_is_of_type(version, G_VARIANT_TYPE_UINT32) &&
+         g_variant_get_uint32(version) == 1;
 }
 
-// True when libsecret's Simple API is NOT backed by org.freedesktop.secrets for
-// this process, so warmupKeyring (which talks to the Secret Service directly)
-// must be skipped.
+// True when libsecret's Simple API (secret_password_*) uses the file backend
+// instead of org.freedesktop.secrets. Then warmupKeyring and the legacy schema
+// migration, which talk to the Secret Service directly, must be skipped: they
+// would examine a store that the Simple API does not use.
 //
-// SECRET_BACKEND is libsecret's own explicit override. Otherwise only a sandbox
-// can redirect the Simple API to the portal file backend, and even then only
-// when the Secret Service is genuinely unreachable: a snap with the
-// password-manager-service interface connected, or a flatpak granted
-// --talk-name=org.freedesktop.secrets, still uses the real service, and
-// warmupKeyring's missing-alias and lock guards are meaningful there.
+// This follows libsecret's backend_get_impl_type(). In a sandbox with the
+// Secret portal, libsecret always uses the file backend. It does not check
+// SECRET_BACKEND or whether the Secret Service is reachable. A Snap with the
+// password-manager-service interface connected, or a Flatpak with
+// --talk-name=org.freedesktop.secrets, still uses the portal file. Only
+// outside that case does SECRET_BACKEND select the backend.
+//
+// Do not use the owner of org.freedesktop.secrets to decide. In a Snap, the
+// host keyring owns the name and the bus daemon reports it, but AppArmor
+// blocks messages to it unless password-manager-service is connected.
 inline bool shouldSkipKeyringWarmup(const char *flatpakInfoPath,
                                     const char *snapName,
                                     const char *secretBackendEnv,
-                                    bool serviceOnBus) {
-  if (secretBackendEnv != nullptr) {
-    const std::string preference(secretBackendEnv);
-    if (preference == "file") {
-      return true;
-    }
-    if (preference == "service") {
-      return false;
-    }
+                                    bool portalAvailable) {
+  if (isSandboxedContainer(flatpakInfoPath, snapName) && portalAvailable) {
+    return true;
   }
-
-  return isSandboxedContainer(flatpakInfoPath, snapName) && !serviceOnBus;
+  return secretBackendEnv != nullptr &&
+         std::string(secretBackendEnv) == "file";
 }
 
 inline bool shouldSkipKeyringWarmup() {
-  // Neither the sandbox status nor the bus name changes meaningfully over the
-  // process lifetime for this purpose, so decide once.
+  // libsecret selects its backend once per process, so decide once too.
   static const bool skip = shouldSkipKeyringWarmup(
       "/.flatpak-info", g_getenv("SNAP_NAME"), g_getenv("SECRET_BACKEND"),
-      secretServiceOnSessionBus());
+      secretPortalAvailable());
   return skip;
 }
 
@@ -253,6 +256,13 @@ private:
   // migrating rather than throwing, so a problem reaching legacy data never
   // breaks the read that triggered this.
   void migrateLegacySchemaData(nlohmann::json &current) {
+    // Legacy items were written by the Simple API, so they are in the store
+    // that it uses. With the file backend, that store is not the Secret
+    // Service.
+    if (shouldSkipKeyringWarmup()) {
+      return;
+    }
+
     g_autoptr(GError) err = nullptr;
     SecretService *service =
         secret_service_get_sync(SECRET_SERVICE_OPEN_SESSION, nullptr, &err);
