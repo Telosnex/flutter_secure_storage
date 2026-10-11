@@ -14,19 +14,27 @@ import 'package:web/web.dart' as web;
 /// Web implementation of FlutterSecureStorage
 ///
 /// Values are encrypted with AES-256-GCM and stored in localStorage (or
-/// sessionStorage) as `iv.ciphertext`.
+/// sessionStorage) under `publicKey.name`, as `iv.ciphertext`.
 ///
-/// The key is a non-extractable `CryptoKey`. It is stored in the IndexedDB
-/// database `dbName`, object store `keys`, under the `publicKey` name.
-/// Scripts on the page can use the key, but cannot read its bytes, so a copy
-/// of the browser storage alone does not decrypt the values.
+/// Where the key is stored:
+/// - By default: as a non-extractable `CryptoKey` in the IndexedDB database
+///   `dbName`, object store `keys`, under `publicKey`. Scripts on the page
+///   can use the key but cannot export its bytes. The browser does not
+///   necessarily encrypt the key at rest: Chrome and Firefox write its bytes
+///   to the profile unencrypted, so a copy of the profile can decrypt the
+///   values.
+/// - With `useSessionStorage`: as raw bytes in sessionStorage under
+///   `publicKey`, so that the key ends with the session, like the values.
+/// - With `wrapKey`: wrapped with `wrapKey`, in the selected storage under
+///   `publicKey`.
 ///
-/// When `wrapKey` is set, the key is wrapped with it and stored in
-/// localStorage under `publicKey`, as before.
+/// Earlier versions stored the raw key in localStorage under `publicKey`.
+/// The first operation that needs the key moves it to IndexedDB as a
+/// non-extractable key with the same bytes, so existing values stay
+/// readable, and then removes it from localStorage.
 ///
-/// Earlier versions stored the raw key bytes in localStorage under
-/// `publicKey`. When no IndexedDB key exists yet, such a raw key and the
-/// values encrypted with it are deleted. Those values are not migrated.
+/// Every operation reads the key from where it is stored. After `deleteAll`
+/// in one tab, other tabs do not keep using the deleted key.
 class FlutterSecureStorageWeb extends FlutterSecureStoragePlatform {
   static const _publicKey = 'publicKey';
   static const _dbName = 'dbName';
@@ -51,8 +59,11 @@ class FlutterSecureStorageWeb extends FlutterSecureStoragePlatform {
     );
   }
 
+  bool _usesSessionStorage(Map<String, String> options) =>
+      options[_useSessionStorage] == 'true';
+
   web.Storage _getStorage(Map<String, String> options) {
-    return options[_useSessionStorage] == 'true'
+    return _usesSessionStorage(options)
         ? web.window.sessionStorage
         : web.window.localStorage;
   }
@@ -67,23 +78,12 @@ class FlutterSecureStorageWeb extends FlutterSecureStoragePlatform {
   /// IndexedDB object store that holds the CryptoKeys.
   static const _idbStoreName = 'keys';
 
-  /// Keys being loaded or loaded, by database and public key. One future per
-  /// key, so concurrent first calls share one key.
-  final _keys = <String, Future<web.CryptoKey>>{};
-
-  String _keyId(Map<String, String> options) =>
-      '${_getDbName(options)}\u0000${options[_publicKey]!}';
-
   bool _usesWrapKey(Map<String, String> options) =>
       options[_wrapKey]?.isNotEmpty ?? false;
 
-  /// If a raw key of an earlier version is in storage, sets up the key now,
-  /// which deletes the raw key and its values. Call before reading values.
-  Future<void> _dropEarlierVersionKey(Map<String, String> options) async {
-    if (_usesWrapKey(options)) return;
-    if (!_getStorage(options).has(options[_publicKey]!)) return;
-    await _getEncryptionKey(_getAlgorithm(Uint8List(12)), options);
-  }
+  /// Whether the key is a non-extractable CryptoKey in IndexedDB.
+  bool _usesIndexedDb(Map<String, String> options) =>
+      !_usesWrapKey(options) && !_usesSessionStorage(options);
 
   /// Returns true if the storage contains the given [key].
   @override
@@ -91,7 +91,6 @@ class FlutterSecureStorageWeb extends FlutterSecureStoragePlatform {
     required String key,
     required Map<String, String> options,
   }) async {
-    await _dropEarlierVersionKey(options);
     return _getStorage(options).has('${options[_publicKey]!}.$key');
   }
 
@@ -114,13 +113,7 @@ class FlutterSecureStorageWeb extends FlutterSecureStoragePlatform {
     final publicKey = options[_publicKey]!;
     _removeValuesAndStoredKey(_getStorage(options), publicKey);
 
-    if (!_usesWrapKey(options)) {
-      // Let a pending load finish first, so it cannot store a key after
-      // the delete.
-      final pending = _keys.remove(_keyId(options));
-      if (pending != null) {
-        await pending.then<void>((_) {}, onError: (Object _) {});
-      }
+    if (_usesIndexedDb(options)) {
       final db = await _openDatabase(_getDbName(options));
       try {
         await _idbRequest<js_interop.JSAny?>(
@@ -133,7 +126,7 @@ class FlutterSecureStorageWeb extends FlutterSecureStoragePlatform {
   }
 
   /// Removes the values of [publicKey] and the key stored in [storage] under
-  /// [publicKey] itself (wrapped, or raw from earlier versions).
+  /// [publicKey] itself (raw or wrapped).
   void _removeValuesAndStoredKey(web.Storage storage, String publicKey) {
     final keys = [publicKey];
     for (var j = 0; j < storage.length; j++) {
@@ -153,24 +146,29 @@ class FlutterSecureStorageWeb extends FlutterSecureStoragePlatform {
 
   /// Reads and decrypts the value for the given [key].
   ///
-  /// Returns null if the key does not exist or if decryption fails.
+  /// Returns null if the key does not exist or if decryption fails. Throws
+  /// if the encryption key cannot be loaded.
   @override
   Future<String?> read({
     required String key,
     required Map<String, String> options,
   }) async {
-    await _dropEarlierVersionKey(options);
     final value = _getStorage(options).getItem('${options[_publicKey]!}.$key');
+    if (value == null) return null;
 
-    return _decryptValue(value, options);
+    final encryptionKey = await _getEncryptionKey(options, create: false);
+    if (encryptionKey == null) return null;
+    return _decryptValue(value, encryptionKey);
   }
 
   /// Decrypts and returns all keys with associated values.
+  ///
+  /// Values that cannot be decrypted are left out. Throws if the encryption
+  /// key cannot be loaded.
   @override
   Future<Map<String, String>> readAll({
     required Map<String, String> options,
   }) async {
-    await _dropEarlierVersionKey(options);
     final storage = _getStorage(options);
     final map = <String, String>{};
     final prefix = '${options[_publicKey]!}.';
@@ -180,9 +178,15 @@ class FlutterSecureStorageWeb extends FlutterSecureStoragePlatform {
       final key = storage.key(j) ?? '';
       if (key.startsWith(prefix)) keys.add(key);
     }
+    if (keys.isEmpty) return map;
+
+    final encryptionKey = await _getEncryptionKey(options, create: false);
+    if (encryptionKey == null) return map;
 
     for (final key in keys) {
-      final value = await _decryptValue(storage.getItem(key), options);
+      final cypherText = storage.getItem(key);
+      if (cypherText == null) continue;
+      final value = await _decryptValue(cypherText, encryptionKey);
       if (value == null) continue;
       map[key.substring(prefix.length)] = value;
     }
@@ -194,67 +198,75 @@ class FlutterSecureStorageWeb extends FlutterSecureStoragePlatform {
     return {'name': 'AES-GCM', 'length': 256, 'iv': iv}.jsify()!;
   }
 
-  Future<web.CryptoKey> _getEncryptionKey(
-    js_interop.JSAny algorithm,
-    Map<String, String> options,
-  ) async {
-    if (_usesWrapKey(options)) {
-      return _getWrappedEncryptionKey(algorithm, options);
-    }
+  js_interop.JSAny get _keyAlgorithm =>
+      {'name': 'AES-GCM', 'length': 256}.jsify()!;
 
-    // No await before this line, so concurrent callers share one future.
-    final id = _keyId(options);
-    var loading = _keys[id];
-    if (loading == null) {
-      loading = _loadOrCreateKey(algorithm, options);
-      _keys[id] = loading;
-    }
-    try {
-      return await loading;
-    } on Object {
-      // Allow a retry after a failure.
-      if (identical(_keys[id], loading)) {
-        // The removed future is the one awaited above.
-        unawaited(_keys.remove(id));
-      }
-      rethrow;
-    }
+  /// Loads the key from where [options] say it is stored. If there is none,
+  /// creates and stores one when [create] is true, and returns null when it
+  /// is false.
+  Future<web.CryptoKey?> _getEncryptionKey(
+    Map<String, String> options, {
+    required bool create,
+  }) {
+    return _usesIndexedDb(options)
+        ? _getIndexedDbKey(options, create: create)
+        : _getStorageKey(options, create: create);
   }
 
-  /// Loads the non-extractable key from IndexedDB, or creates and stores it.
-  Future<web.CryptoKey> _loadOrCreateKey(
-    js_interop.JSAny algorithm,
-    Map<String, String> options,
-  ) async {
+  /// The non-extractable key in IndexedDB. Moves a raw key of an earlier
+  /// version from localStorage first.
+  Future<web.CryptoKey?> _getIndexedDbKey(
+    Map<String, String> options, {
+    required bool create,
+  }) async {
     final publicKey = options[_publicKey]!;
     final db = await _openDatabase(_getDbName(options));
     try {
       final stored = await _loadKey(db, publicKey);
       if (stored != null) return stored;
 
-      // Raw key of an earlier version, and the values it encrypted.
-      _removeValuesAndStoredKey(_getStorage(options), publicKey);
+      final localStorage = web.window.localStorage;
+      final rawKey = localStorage.getItem(publicKey);
+      web.CryptoKey key;
+      if (rawKey != null) {
+        // Keep the bytes, so the values encrypted with them stay readable.
+        key = await _crypto.subtle
+            .importKey(
+              'raw',
+              base64Decode(rawKey).toJS,
+              _keyAlgorithm,
+              false,
+              ['encrypt', 'decrypt'].toJS,
+            )
+            .toDart;
+      } else if (create) {
+        key = (await _crypto.subtle
+            .generateKey(_keyAlgorithm, false, ['encrypt', 'decrypt'].toJS)
+            .toDart)! as web.CryptoKey;
+      } else {
+        return null;
+      }
 
-      final created = (await _crypto.subtle
-          .generateKey(algorithm, false, ['encrypt', 'decrypt'].toJS)
-          .toDart)! as web.CryptoKey;
-
-      // `add` fails if another tab or instance stored a key meanwhile. Then
-      // use that key, so that every writer uses the same key.
+      // `add` fails if another tab or call stored a key meanwhile. Then use
+      // that key, so that every writer uses the same key. Two calls that
+      // move the same raw key store the same bytes.
       try {
         await _idbRequest<js_interop.JSAny?>(
-          _keyStore(db, 'readwrite').add(created, publicKey.toJS),
+          _keyStore(db, 'readwrite').add(key, publicKey.toJS),
         );
-        return created;
       } on _IdbRequestError catch (e) {
         if (e.name != 'ConstraintError') rethrow;
+        final winner = await _loadKey(db, publicKey);
+        if (winner == null) {
+          throw StateError('IndexedDB key for "$publicKey" disappeared');
+        }
+        key = winner;
       }
 
-      final winner = await _loadKey(db, publicKey);
-      if (winner == null) {
-        throw StateError('IndexedDB key for "$publicKey" disappeared');
+      if (rawKey != null && localStorage.getItem(publicKey) == rawKey) {
+        localStorage.removeItem(publicKey);
       }
-      return winner;
+      return key;
     } finally {
       db.close();
     }
@@ -299,57 +311,77 @@ class FlutterSecureStorageWeb extends FlutterSecureStoragePlatform {
     return completer.future;
   }
 
-  /// The key wrapped with `wrapKey`, stored in localStorage (or
-  /// sessionStorage) under `publicKey`.
-  Future<web.CryptoKey> _getWrappedEncryptionKey(
-    js_interop.JSAny algorithm,
+  /// The key stored in localStorage or sessionStorage under `publicKey`:
+  /// wrapped with `wrapKey` if set, raw otherwise.
+  Future<web.CryptoKey?> _getStorageKey(
+    Map<String, String> options, {
+    required bool create,
+  }) async {
+    final storage = _getStorage(options);
+    final name = options[_publicKey]!;
+
+    final stored = storage.getItem(name);
+    if (stored != null) return _importStorageKey(stored, options);
+    if (!create) return null;
+
+    // Extractable, so that it can be wrapped or exported.
+    final created = (await _crypto.subtle
+        .generateKey(_keyAlgorithm, true, ['encrypt', 'decrypt'].toJS)
+        .toDart)! as web.CryptoKey;
+    final js_interop.JSAny? exported;
+    if (_usesWrapKey(options)) {
+      exported = await _crypto.subtle
+          .wrapKey(
+            'raw',
+            created,
+            await _getWrapKey(options),
+            _getWrapAlgorithm(options),
+          )
+          .toDart;
+    } else {
+      exported = await _crypto.subtle.exportKey('raw', created).toDart;
+    }
+
+    // A concurrent call in this tab may have stored a key during the awaits
+    // above. Use that one. No await between this check and setItem.
+    final winner = storage.getItem(name);
+    if (winner != null) return _importStorageKey(winner, options);
+    storage.setItem(
+      name,
+      base64Encode(
+        (exported! as js_interop.JSArrayBuffer).toDart.asUint8List(),
+      ),
+    );
+    return created;
+  }
+
+  Future<web.CryptoKey> _importStorageKey(
+    String stored,
     Map<String, String> options,
   ) async {
-    final storage = _getStorage(options);
-    late web.CryptoKey encryptionKey;
-    final key = options[_publicKey]!;
-
-    if (storage.has(key)) {
-      final jwk = base64Decode(storage.getItem(key)!);
-      final unwrappingKey = await _getWrapKey(options);
-      final unwrapAlgorithm = _getWrapAlgorithm(options);
-      encryptionKey = await _crypto.subtle
+    final bytes = base64Decode(stored).toJS;
+    if (_usesWrapKey(options)) {
+      return _crypto.subtle
           .unwrapKey(
             'raw',
-            jwk.toJS,
-            unwrappingKey,
-            unwrapAlgorithm,
-            algorithm,
+            bytes,
+            await _getWrapKey(options),
+            _getWrapAlgorithm(options),
+            _keyAlgorithm,
             false,
             ['encrypt', 'decrypt'].toJS,
           )
           .toDart;
-    } else {
-      // Extractable, so that it can be wrapped.
-      encryptionKey = (await _crypto.subtle
-          .generateKey(algorithm, true, ['encrypt', 'decrypt'].toJS)
-          .toDart)! as web.CryptoKey;
-
-      final wrappingKey = await _getWrapKey(options);
-      final wrapAlgorithm = _getWrapAlgorithm(options);
-      final jsonWebKey = await _crypto.subtle
-          .wrapKey(
-            'raw',
-            encryptionKey,
-            wrappingKey,
-            wrapAlgorithm,
-          )
-          .toDart;
-
-      storage.setItem(
-        key,
-        base64Encode(
-          (jsonWebKey! as js_interop.JSArrayBuffer).toDart.asUint8List(),
-        ),
-      );
     }
-
-    return encryptionKey;
+    return _crypto.subtle
+        .importKey(
+          'raw',
+          bytes,
+          _keyAlgorithm,
+          false,
+          ['encrypt', 'decrypt'].toJS,
+        )
+        .toDart;
   }
 
   Future<web.CryptoKey> _getWrapKey(Map<String, String> options) async {
@@ -387,7 +419,7 @@ class FlutterSecureStorageWeb extends FlutterSecureStoragePlatform {
 
     final algorithm = _getAlgorithm(iv);
 
-    final encryptionKey = await _getEncryptionKey(algorithm, options);
+    final encryptionKey = (await _getEncryptionKey(options, create: true))!;
 
     final encryptedContent = (await _crypto.subtle
         .encrypt(
@@ -405,39 +437,28 @@ class FlutterSecureStorageWeb extends FlutterSecureStoragePlatform {
     _getStorage(options).setItem('${options[_publicKey]!}.$key', encoded);
   }
 
-  Future<String?> _decryptValue(
-    String? cypherText,
-    Map<String, String> options,
-  ) async {
-    if (cypherText != null) {
-      try {
-        final parts = cypherText.split('.');
+  /// Returns null if [cypherText] is malformed or [key] does not decrypt it.
+  Future<String?> _decryptValue(String cypherText, web.CryptoKey key) async {
+    try {
+      final parts = cypherText.split('.');
+      final iv = base64Decode(parts[0]);
+      final value = base64Decode(parts[1]);
 
-        final iv = base64Decode(parts[0]);
-        final algorithm = _getAlgorithm(iv);
+      final decryptedContent = await _crypto.subtle
+          .decrypt(
+            _getAlgorithm(iv),
+            key,
+            Uint8List.fromList(value).toJS,
+          )
+          .toDart;
 
-        final decryptionKey = await _getEncryptionKey(algorithm, options);
-
-        final value = base64Decode(parts[1]);
-
-        final decryptedContent = await _crypto.subtle
-            .decrypt(
-              _getAlgorithm(iv),
-              decryptionKey,
-              Uint8List.fromList(value).toJS,
-            )
-            .toDart;
-
-        final plainText = utf8.decode(
-          (decryptedContent! as js_interop.JSArrayBuffer).toDart.asUint8List(),
-        );
-
-        return plainText;
-      } on Exception catch (e, s) {
-        if (kDebugMode) {
-          print(e);
-          debugPrintStack(stackTrace: s);
-        }
+      return utf8.decode(
+        (decryptedContent! as js_interop.JSArrayBuffer).toDart.asUint8List(),
+      );
+    } on Object catch (e, s) {
+      if (kDebugMode) {
+        print(e);
+        debugPrintStack(stackTrace: s);
       }
     }
 

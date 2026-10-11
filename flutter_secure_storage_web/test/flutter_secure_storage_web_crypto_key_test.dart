@@ -10,7 +10,8 @@ import 'package:flutter_secure_storage_web/flutter_secure_storage_web.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:web/web.dart' as web;
 
-// Tests for the non-extractable CryptoKey stored in IndexedDB.
+// Tests for where the key is stored: IndexedDB by default, sessionStorage
+// with useSessionStorage, and moving a raw key of an earlier version.
 
 Map<String, String> _options(
   String publicKey, {
@@ -188,31 +189,101 @@ void main() {
   });
 
   group('earlier versions', () {
-    test('a raw localStorage key and its values are deleted', () async {
+    /// Stores a raw key and one value the way earlier versions did.
+    Future<void> legacy(String publicKey, String name, String value) async {
+      final key = await _generateExtractableKey();
+      final raw = (await web.window.crypto.subtle.exportKey('raw', key).toDart)!
+          as js_interop.JSArrayBuffer;
+      web.window.localStorage
+        ..setItem(publicKey, base64Encode(raw.toDart.asUint8List()))
+        ..setItem('$publicKey.$name', await _encrypt(key, value));
+    }
+
+    test('a read moves the raw key to IndexedDB and keeps the values',
+        () async {
       final options = _options('K', dbName: db);
       final ls = web.window.localStorage;
-      final legacyKey = await _generateExtractableKey();
-      final raw = (await web.window.crypto.subtle
-          .exportKey('raw', legacyKey)
-          .toDart)! as js_interop.JSArrayBuffer;
-      ls
-        ..setItem('K', base64Encode(raw.toDart.asUint8List()))
-        ..setItem('K.old', await _encrypt(legacyKey, 'legacy'))
-        ..setItem('Other.x', 'untouched');
+      await legacy('K', 'old', 'legacy');
+      ls.setItem('Other.x', 'untouched');
 
-      final storage = FlutterSecureStorageWeb();
-      expect(await storage.read(key: 'old', options: options), isNull);
+      expect(
+        await FlutterSecureStorageWeb().read(key: 'old', options: options),
+        'legacy',
+      );
 
       expect(ls.getItem('K'), isNull);
-      expect(ls.getItem('K.old'), isNull);
       expect(ls.getItem('Other.x'), 'untouched');
       expect((await _loadKey(db, 'K'))!.extractable, isFalse);
-
-      await storage.write(key: 'new', value: 'v', options: options);
       expect(
-        await FlutterSecureStorageWeb().read(key: 'new', options: options),
-        'v',
+        await FlutterSecureStorageWeb().read(key: 'old', options: options),
+        'legacy',
       );
+    });
+
+    test('a first write moves the raw key and old values stay readable',
+        () async {
+      final options = _options('K', dbName: db);
+      await legacy('K', 'old', 'legacy');
+
+      await FlutterSecureStorageWeb()
+          .write(key: 'new', value: 'v', options: options);
+
+      expect(web.window.localStorage.getItem('K'), isNull);
+      expect(
+        await FlutterSecureStorageWeb().readAll(options: options),
+        {'old': 'legacy', 'new': 'v'},
+      );
+    });
+
+    test('two tabs moving the same raw key at once agree', () async {
+      final options = _options('K', dbName: db);
+      await legacy('K', 'old', 'legacy');
+      final a = FlutterSecureStorageWeb();
+      final b = FlutterSecureStorageWeb();
+
+      await Future.wait([
+        a.write(key: 'a', value: 'from a', options: options),
+        b.write(key: 'b', value: 'from b', options: options),
+        a.read(key: 'old', options: options),
+        b.read(key: 'old', options: options),
+      ]);
+
+      expect(
+        await FlutterSecureStorageWeb().readAll(options: options),
+        {'old': 'legacy', 'a': 'from a', 'b': 'from b'},
+      );
+    });
+  });
+
+  group('other tabs', () {
+    test('after deleteAll in one tab, another tab writes with a live key',
+        () async {
+      final options = _options('K', dbName: db);
+      final a = FlutterSecureStorageWeb();
+      final b = FlutterSecureStorageWeb();
+      await a.write(key: 'k', value: 'old', options: options);
+      expect(await b.read(key: 'k', options: options), 'old');
+
+      await a.deleteAll(options: options);
+      await b.write(key: 'k', value: 'new', options: options);
+
+      expect(
+        await FlutterSecureStorageWeb().read(key: 'k', options: options),
+        'new',
+      );
+      expect(await a.read(key: 'k', options: options), 'new');
+    });
+
+    test('reads do not create a key', () async {
+      final options = _options('K', dbName: db);
+      final storage = FlutterSecureStorageWeb();
+      expect(await storage.read(key: 'k', options: options), isNull);
+      expect(await storage.readAll(options: options), isEmpty);
+      web.window.localStorage.setItem('K.orphan', 'AAAA.AAAA');
+      expect(await storage.read(key: 'k', options: options), isNull);
+      expect(await storage.readAll(options: options), isEmpty);
+
+      expect(await _loadKey(db, 'K'), isNull);
     });
   });
 
@@ -241,18 +312,43 @@ void main() {
   });
 
   group('sessionStorage', () {
-    test('values go to sessionStorage, key to IndexedDB', () async {
+    test('the key is in sessionStorage, not IndexedDB', () async {
       final options = _options('S', dbName: db, session: true);
       await FlutterSecureStorageWeb()
           .write(key: 'a', value: 'v', options: options);
 
       expect(web.window.sessionStorage.getItem('S.a'), isNotNull);
+      expect(web.window.sessionStorage.getItem('S'), isNotNull);
       expect(web.window.localStorage.length, 0);
-      expect(await _loadKey(db, 'S'), isNotNull);
+      expect(await _loadKey(db, 'S'), isNull);
       expect(
         await FlutterSecureStorageWeb().read(key: 'a', options: options),
         'v',
       );
+    });
+
+    test('concurrent first writes in one tab share one key', () async {
+      final options = _options('S', dbName: db, session: true);
+      final storage = FlutterSecureStorageWeb();
+      await Future.wait([
+        for (var i = 0; i < 10; i++)
+          storage.write(key: 'k$i', value: 'v$i', options: options),
+      ]);
+
+      expect(await FlutterSecureStorageWeb().readAll(options: options), {
+        for (var i = 0; i < 10; i++) 'k$i': 'v$i',
+      });
+    });
+
+    test('deleteAll removes the key with the values', () async {
+      final options = _options('S', dbName: db, session: true);
+      final storage = FlutterSecureStorageWeb();
+      await storage.write(key: 'a', value: 'v', options: options);
+
+      await storage.deleteAll(options: options);
+
+      expect(web.window.sessionStorage.length, 0);
+      expect(await storage.read(key: 'a', options: options), isNull);
     });
   });
 }

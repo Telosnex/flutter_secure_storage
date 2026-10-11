@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+- By default, the key is now a non-extractable `CryptoKey` in IndexedDB
+  (`dbName`) instead of raw bytes in localStorage. A raw key from earlier
+  versions moves there on first use with the same bytes, so existing values
+  stay readable.
+- Concurrent first writes, in one tab or several, now use one key.
+- `useSessionStorage` and `wrapKey` keep storing the key in Web Storage, as
+  before.
+
 ## 2.1.1
 - Fix potential key skipping in `readAll` when storage is modified concurrently during async decryption by collecting keys synchronously before awaiting.
 
