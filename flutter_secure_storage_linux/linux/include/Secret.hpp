@@ -387,6 +387,16 @@ private:
       return true;
     }
 
+    // Ask the user at most once per process. Without this, every later
+    // read or write (sign-in session, database key, ...) shows the unlock
+    // dialog again right after the user cancelled it. A collection unlocked
+    // some other way passes the check above and works normally.
+    if (unlockDeclined()) {
+      g_object_unref(collection);
+      g_object_unref(service);
+      throw LibsecretError("KeyringLocked", "KeyringLocked");
+    }
+
     GList *to_unlock = g_list_append(nullptr, collection);
     GList *unlocked_out = nullptr;
     gint n = secret_service_unlock_sync(service, to_unlock, nullptr, &unlocked_out, nullptr);
@@ -398,9 +408,16 @@ private:
     g_object_unref(service);
 
     if (n == 0) {
+      unlockDeclined() = true;
       throw LibsecretError("KeyringLocked", "KeyringLocked");
     }
 
     return true;
+  }
+
+  // Shared by every SecretStorage in the process.
+  static bool &unlockDeclined() {
+    static bool declined = false;
+    return declined;
   }
 };
