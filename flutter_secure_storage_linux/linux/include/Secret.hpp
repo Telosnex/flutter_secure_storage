@@ -201,6 +201,7 @@ public:
   }
 
   bool storeToKeyring(nlohmann::json value) {
+    failIfUnlockDeclined();
     const std::string output = value.dump();
     g_autoptr(GError) err = nullptr;
     bool result = secret_password_storev_sync(
@@ -208,6 +209,7 @@ public:
         output.c_str(), nullptr, &err);
 
     if (err) {
+      noteUnlockDeclined(err);
       throw LibsecretError("secret_password_storev_sync", err);
     }
 
@@ -218,11 +220,13 @@ public:
     nlohmann::json value = nlohmann::json::object();
 
     if (warmupKeyring()) {
+      failIfUnlockDeclined();
       g_autoptr(GError) err = nullptr;
       secret_autofree gchar *result = secret_password_lookupv_sync(
           &the_schema, m_attributes.getGHashTable(), nullptr, &err);
 
       if (err) {
+        noteUnlockDeclined(err);
         throw LibsecretError("secret_password_lookupv_sync", err);
       }
       if(result != NULL && strcmp(result, "") != 0){
@@ -419,5 +423,24 @@ private:
   static bool &unlockDeclined() {
     static bool declined = false;
     return declined;
+  }
+
+  // In a Snap or Flatpak the Simple API reads through the Secret portal
+  // (file backend). When the user cancels the desktop's unlock dialog,
+  // libsecret reports "user interaction cancelled" or
+  // "user interaction failed", and asks again on the next call. Treat that
+  // like the direct path's refused unlock: remember it, report KeyringLocked.
+  static void noteUnlockDeclined(GError *err) {
+    if (err != nullptr && err->message != nullptr &&
+        strstr(err->message, "user interaction") != nullptr) {
+      unlockDeclined() = true;
+      throw LibsecretError("KeyringLocked", "KeyringLocked");
+    }
+  }
+
+  static void failIfUnlockDeclined() {
+    if (unlockDeclined()) {
+      throw LibsecretError("KeyringLocked", "KeyringLocked");
+    }
   }
 };
