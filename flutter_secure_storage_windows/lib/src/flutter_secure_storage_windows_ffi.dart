@@ -263,24 +263,70 @@ const String encryptedJsonFileName = 'flutter_secure_storage.dat';
 @visibleForTesting
 class DpapiJsonFileMapStorage extends MapStorage {
   /// Creates an instance of `DpapiJsonFileMapStorage`.
-  DpapiJsonFileMapStorage();
+  ///
+  /// [localDirectory] and [roamingDirectory] are for tests; they default to
+  /// path_provider's cache folder (Local AppData) and support folder
+  /// (Roaming AppData).
+  DpapiJsonFileMapStorage({
+    Future<Directory> Function()? localDirectory,
+    Future<Directory> Function()? roamingDirectory,
+  })  : _localDirectory = localDirectory ?? getApplicationCacheDirectory,
+        _roamingDirectory = roamingDirectory ?? getApplicationSupportDirectory;
+
+  final Future<Directory> Function() _localDirectory;
+  final Future<Directory> Function() _roamingDirectory;
+  Future<String>? _jsonFilePath;
 
   /// Retrieves the canonical path to the encrypted JSON file used for storage.
   ///
-  /// This method constructs the file path based on the application's support
-  /// directory.
+  /// The file is in Local AppData (`%LOCALAPPDATA%\<company>\<product>`).
+  /// Secrets belong to one PC: Roaming AppData is copied to the user's other
+  /// PCs by roaming profiles and shared between PCs by Folder Redirection,
+  /// where two PCs would overwrite each other's file. A file left in Roaming
+  /// AppData by an older version is moved here once per process.
   ///
   /// Returns:
   /// - A [FutureOr] resolving to the canonical file path as a string.
-  FutureOr<String> _getJsonFilePath() async {
-    final appDataDirectory = await getApplicationSupportDirectory();
+  FutureOr<String> _getJsonFilePath() =>
+      _jsonFilePath ??= _resolveJsonFilePath();
 
-    return path.canonicalize(
-      path.join(
-        appDataDirectory.path,
-        encryptedJsonFileName,
-      ),
+  Future<String> _resolveJsonFilePath() async {
+    final local = path.canonicalize(
+      path.join((await _localDirectory()).path, encryptedJsonFileName),
     );
+    String? roaming;
+    try {
+      roaming = path.canonicalize(
+        path.join((await _roamingDirectory()).path, encryptedJsonFileName),
+      );
+      if (roaming != local) {
+        await moveRoamingFile(File(roaming), File(local));
+      }
+    } on Object catch (e) {
+      debugPrint('Moving $encryptedJsonFileName to Local AppData failed. $e');
+      // Keep using the old file this run rather than starting empty.
+      if (roaming != null &&
+          !File(local).existsSync() &&
+          File(roaming).existsSync()) {
+        return roaming;
+      }
+    }
+    return local;
+  }
+
+  /// Moves [roaming] to [local]. If [local] already exists it wins and
+  /// [roaming] is only deleted. Copies rather than renames, because a
+  /// redirected Roaming AppData is often on another volume.
+  @visibleForTesting
+  static Future<void> moveRoamingFile(File roaming, File local) async {
+    if (!roaming.existsSync()) return;
+    if (!local.existsSync()) {
+      local.parent.createSync(recursive: true);
+      final tmp = File('${local.path}.tmp');
+      await roaming.copy(tmp.path);
+      await tmp.rename(local.path);
+    }
+    await roaming.delete();
   }
 
   @override

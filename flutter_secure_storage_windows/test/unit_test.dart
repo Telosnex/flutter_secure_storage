@@ -27,9 +27,12 @@ void main() {
   PathProviderPlatform.instance = PathProviderWindows();
 
   FutureOr<void> cleanUpFiles() async {
-    // Clean up current & legacy files.
-    final directory = await getApplicationSupportDirectory();
-    if (directory.existsSync()) {
+    // Clean up current (Local AppData) & legacy (Roaming AppData) files.
+    for (final directory in [
+      await getApplicationCacheDirectory(),
+      await getApplicationSupportDirectory(),
+    ]) {
+      if (!directory.existsSync()) continue;
       directory
           .listSync(followLinks: false)
           .whereType<File>()
@@ -173,9 +176,14 @@ void main() {
         const value = 'VALUE';
         await target.write(key: key, value: value, options: options);
 
-        final directory = await getApplicationSupportDirectory();
+        final directory = await getApplicationCacheDirectory();
         final file = File(path.join(directory.path, encryptedJsonFileName));
         expect(file.existsSync(), isTrue);
+        final roaming = await getApplicationSupportDirectory();
+        expect(
+          File(path.join(roaming.path, encryptedJsonFileName)).existsSync(),
+          isFalse,
+        );
         expect(file.statSync().size, greaterThan(0));
         // May be encrypted
         final content = file.readAsBytesSync();
@@ -1288,7 +1296,7 @@ void main() {
 
   group('DpapiJsonFileMapStorage error paths', () {
     Future<File> storageFile() async {
-      final dir = await getApplicationSupportDirectory();
+      final dir = await getApplicationCacheDirectory();
       return File(path.join(dir.path, encryptedJsonFileName));
     }
 
@@ -1380,6 +1388,61 @@ void main() {
         } finally {
           if (file.existsSync()) await file.delete();
         }
+      }),
+    );
+  });
+
+  group('Roaming AppData to Local AppData', () {
+    late Directory temp;
+    late Directory local;
+    late Directory roaming;
+
+    setUp(() {
+      temp = Directory.systemTemp.createTempSync('fss_move');
+      local = Directory(path.join(temp.path, 'Local', 'Co', 'App'));
+      roaming = Directory(path.join(temp.path, 'Roaming', 'Co', 'App'))
+        ..createSync(recursive: true);
+    });
+    tearDown(() => temp.deleteSync(recursive: true));
+
+    File localFile() => File(path.join(local.path, encryptedJsonFileName));
+    File roamingFile() => File(path.join(roaming.path, encryptedJsonFileName));
+
+    test('moveRoamingFile moves the file and leaves no temp file', () async {
+      roamingFile().writeAsBytesSync([1, 2, 3]);
+      await DpapiJsonFileMapStorage.moveRoamingFile(roamingFile(), localFile());
+      expect(localFile().readAsBytesSync(), [1, 2, 3]);
+      expect(roamingFile().existsSync(), isFalse);
+      expect(File('${localFile().path}.tmp').existsSync(), isFalse);
+    });
+
+    test('moveRoamingFile keeps an existing local file', () async {
+      local.createSync(recursive: true);
+      localFile().writeAsBytesSync([9]);
+      roamingFile().writeAsBytesSync([1, 2, 3]);
+      await DpapiJsonFileMapStorage.moveRoamingFile(roamingFile(), localFile());
+      expect(localFile().readAsBytesSync(), [9]);
+      expect(roamingFile().existsSync(), isFalse);
+    });
+
+    test('moveRoamingFile does nothing without a roaming file', () async {
+      await DpapiJsonFileMapStorage.moveRoamingFile(roamingFile(), localFile());
+      expect(localFile().existsSync(), isFalse);
+    });
+
+    test(
+      'load reads values written by an older version in Roaming AppData',
+      () => withFfi(() async {
+        roamingFile().writeAsBytesSync(
+          _dpApiEncrypt(utf8.encode(jsonEncode({'k': 'v'}))),
+        );
+        final storage = DpapiJsonFileMapStorage(
+          localDirectory: () async => local,
+          roamingDirectory: () async => roaming,
+        );
+        expect(await storage.load({}), {'k': 'v'});
+        expect(localFile().existsSync(), isTrue);
+        expect(roamingFile().existsSync(), isFalse);
       }),
     );
   });
