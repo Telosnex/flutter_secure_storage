@@ -286,20 +286,27 @@ class DpapiJsonFileMapStorage extends MapStorage {
   /// AppData by an older version is moved here once per process.
   ///
   /// Returns:
-  /// - A [FutureOr] resolving to the canonical file path as a string.
+  /// - A [FutureOr] resolving to the file path as a string.
   FutureOr<String> _getJsonFilePath() =>
       _jsonFilePath ??= _resolveJsonFilePath();
 
+  /// The resolved file path, for tests.
+  @visibleForTesting
+  Future<String> get jsonFilePath async => _getJsonFilePath();
+
   Future<String> _resolveJsonFilePath() async {
-    final local = path.canonicalize(
+    // No canonicalize: it lowercases on Windows, and a redirected Roaming
+    // AppData can be on a case-sensitive share (Samba, NAS), where the
+    // lowercased path does not exist. Compare with path.equals instead.
+    final local = path.normalize(
       path.join((await _localDirectory()).path, encryptedJsonFileName),
     );
     String? roaming;
     try {
-      roaming = path.canonicalize(
+      roaming = path.normalize(
         path.join((await _roamingDirectory()).path, encryptedJsonFileName),
       );
-      if (roaming != local) {
+      if (!path.equals(roaming, local)) {
         await moveRoamingFile(File(roaming), File(local));
       }
     } on Object catch (e) {

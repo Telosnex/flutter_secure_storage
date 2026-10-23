@@ -1430,6 +1430,29 @@ void main() {
       expect(localFile().existsSync(), isFalse);
     });
 
+    test('resolved paths keep their case', () async {
+      // A redirected Roaming AppData can be on a case-sensitive share, so
+      // the plugin must not lowercase paths (path.canonicalize does on
+      // Windows). Checked on the path itself, since NTFS ignores case.
+      final mixedLocal = Directory(path.join(temp.path, 'LoCaL', 'MiXeD'));
+      final mixedRoaming = Directory(path.join(temp.path, 'RoAmInG', 'MiXeD'))
+        ..createSync(recursive: true);
+      final roamingFile =
+          File(path.join(mixedRoaming.path, encryptedJsonFileName))
+            ..writeAsBytesSync([1, 2, 3]);
+      final storage = DpapiJsonFileMapStorage(
+        localDirectory: () async => mixedLocal,
+        roamingDirectory: () async => mixedRoaming,
+      );
+      final resolved = await storage.jsonFilePath;
+      expect(
+        resolved,
+        path.normalize(path.join(mixedLocal.path, encryptedJsonFileName)),
+      );
+      expect(File(resolved).readAsBytesSync(), [1, 2, 3]);
+      expect(roamingFile.existsSync(), isFalse);
+    });
+
     test(
       'load reads values written by an older version in Roaming AppData',
       () => withFfi(() async {
