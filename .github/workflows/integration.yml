@@ -52,8 +52,9 @@ jobs:
             echo "== $app"
             codesign -d --entitlements - "$app" 2>&1 || true
             codesign -dvv "$app" 2>&1 || true
-            # Launch the binary directly; a launch killed by AMFI exits at once.
-            "$app/Contents/MacOS/"* > direct-run.log 2>&1 &
+            # Launch the app's executable directly (not the debug dylib next to it).
+            exe="$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
+            "$exe" > direct-run.log 2>&1 &
             pid=$!
             sleep 15
             if kill -0 "$pid" 2>/dev/null; then

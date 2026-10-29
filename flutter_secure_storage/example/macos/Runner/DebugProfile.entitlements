@@ -8,7 +8,8 @@
 	  killed by AMFI at launch, so the integration test never connects.
 	  So the example uses the legacy file keychain (usesDataProtectionKeychain
 	  false), which needs no entitlement. The data protection keychain, the
-	  plugin's default, is only exercised by a signed build.
+	  plugin's default, returns errSecMissingEntitlement (-34018) to an
+	  ad-hoc app, so it is only exercised by a signed build.
 	-->
 	<key>com.apple.security.app-sandbox</key>
 	<true/>

@@ -476,10 +476,50 @@ class FlutterSecureStorage {
         }
     }
 
+    /// Runs a query that matches every item and returns the items with their values.
+    ///
+    /// On macOS without the data protection keychain, the legacy keychain rejects
+    /// kSecMatchLimitAll combined with kSecReturnData (errSecParam, -50), so the items
+    /// are listed first and each value is fetched with a single-item query. Other
+    /// keychains take the one query.
+    private func copyAllWithData(_ query: [CFString: Any], params: KeychainQueryParameters) -> (OSStatus, [[CFString: Any]]?) {
+        #if os(macOS)
+        if !params.usesDataProtectionKeychain {
+            var listQuery = query
+            listQuery.removeValue(forKey: kSecReturnData)
+            var listRef: AnyObject?
+            let listStatus = SecItemCopyMatching(listQuery as CFDictionary, &listRef)
+            guard listStatus == errSecSuccess, let listed = listRef as? [[CFString: Any]] else {
+                return (listStatus, nil)
+            }
+
+            var items: [[CFString: Any]] = []
+            for var item in listed {
+                guard let account = item[kSecAttrAccount] as? String else { continue }
+                var valueQuery = query
+                valueQuery.removeValue(forKey: kSecReturnAttributes)
+                valueQuery[kSecMatchLimit] = kSecMatchLimitOne
+                valueQuery[kSecAttrAccount] = account
+                var valueRef: AnyObject?
+                if SecItemCopyMatching(valueQuery as CFDictionary, &valueRef) == errSecSuccess,
+                   let value = valueRef as? Data {
+                    item[kSecValueData] = value
+                }
+                items.append(item)
+            }
+            return (errSecSuccess, items)
+        }
+        #endif
+
+        var ref: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &ref)
+        return (status, ref as? [[CFString: Any]])
+    }
+
     /// Reads all items from the keychain matching the query parameters.
     internal func readAll(params: KeychainQueryParameters) -> FlutterSecureStorageResponse {
-        func collectResults(from ref: AnyObject?, into results: inout [String: String]) {
-            guard let items = ref as? [[CFString: Any]] else { return }
+        func collectResults(from items: [[CFString: Any]]?, into results: inout [String: String]) {
+            guard let items = items else { return }
             for item in items {
                 guard let key = item[kSecAttrAccount] as? String else { continue }
 
@@ -522,8 +562,7 @@ class FlutterSecureStorage {
         query[kSecReturnAttributes] = true
         query[kSecReturnData] = true
 
-        var ref: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &ref)
+        let (status, items) = copyAllWithData(query, params: params)
 
         guard status == errSecSuccess || status == errSecItemNotFound else {
             return FlutterSecureStorageResponse(status: status, value: nil)
@@ -531,7 +570,7 @@ class FlutterSecureStorage {
 
         var results: [String: String] = [:]
         if status == errSecSuccess {
-            collectResults(from: ref, into: &results)
+            collectResults(from: items, into: &results)
         }
 
         // Also check the legacy SecAccessControl envelope so items written by older plugin
@@ -541,10 +580,9 @@ class FlutterSecureStorage {
             legacy[kSecReturnAttributes] = true
             legacy[kSecReturnData] = true
 
-            var legacyRef: AnyObject?
-            let legacyStatus = SecItemCopyMatching(legacy as CFDictionary, &legacyRef)
+            let (legacyStatus, legacyItems) = copyAllWithData(legacy, params: params)
             if legacyStatus == errSecSuccess {
-                collectResults(from: legacyRef, into: &results)
+                collectResults(from: legacyItems, into: &results)
             }
         }
 
@@ -555,10 +593,9 @@ class FlutterSecureStorage {
             otherQuery[kSecReturnAttributes] = true
             otherQuery[kSecReturnData] = true
 
-            var otherRef: AnyObject?
-            let otherStatus = SecItemCopyMatching(otherQuery as CFDictionary, &otherRef)
+            let (otherStatus, otherItems) = copyAllWithData(otherQuery, params: params)
             if otherStatus == errSecSuccess {
-                collectResults(from: otherRef, into: &results)
+                collectResults(from: otherItems, into: &results)
             }
         }
 
@@ -695,25 +732,6 @@ class FlutterSecureStorage {
 
             query[kSecValueData] = value.data(using: .utf8)
             let status = SecItemAdd(query as CFDictionary, nil)
-            if status != errSecSuccess {
-                // TEMPORARY diagnostics: which attribute makes SecItemAdd fail?
-                var variants: [(String, [CFString])] = [
-                    ("as-is", []),
-                    ("no-sync", [kSecAttrSynchronizable]),
-                    ("no-returndata", [kSecReturnData]),
-                    ("no-accessible", [kSecAttrAccessible]),
-                    ("no-service", [kSecAttrService]),
-                    ("no-account", [kSecAttrAccount]),
-                    ("only-class-value", [kSecAttrSynchronizable, kSecReturnData, kSecAttrAccessible, kSecAttrService]),
-                ]
-                for (name, drop) in variants {
-                    var v = query
-                    for k in drop { v.removeValue(forKey: k) }
-                    let vs = SecItemAdd(v as CFDictionary, nil)
-                    NSLog("FSS-DIAG variant %@ status=%d", name, vs)
-                }
-                NSLog("FSS-DIAG add status=%d keyExists=%@ dp=%@ keys=%@", status, String(describing: keyExists), String(describing: params.usesDataProtectionKeychain), query.keys.map { $0 as String }.joined(separator: ","))
-            }
             return FlutterSecureStorageResponse(status: status, value: nil)
         }
 
