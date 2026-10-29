@@ -42,6 +42,19 @@ jobs:
           idle-minutes: 15
           working-directory: ${{ env.EXAMPLE }}
           run: flutter test -r expanded integration_test/app_test.dart -d macos
+      # Diagnostics for a launch that never connects: is the app killed at
+      # launch (AMFI, taskgated) or is the log reader the problem?
+      - name: Diagnose macOS launch
+        if: failure()
+        working-directory: ${{ env.EXAMPLE }}
+        run: |
+          for app in build/macos/Build/Products/Debug/*.app; do
+            echo "== $app"
+            codesign -d --entitlements - "$app" 2>&1 || true
+            codesign -dvv "$app" 2>&1 || true
+            (timeout 20 "$app/Contents/MacOS/"* ; echo "direct run exit=$?") 2>&1 | tail -20 || true
+          done
+          log show --last 5m --predicate 'process == "amfid" OR eventMessage CONTAINS "taskgated"' 2>&1 | tail -150 || true
 
   desktop-windows-x64:
     name: Windows x64
