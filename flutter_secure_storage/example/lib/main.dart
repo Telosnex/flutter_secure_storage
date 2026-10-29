@@ -51,7 +51,12 @@ class HomePageState extends State<HomePage> {
       ),
       mOptions: MacOsOptions(
         accountName: accountName,
-        synchronizable: true,
+        // The legacy file keychain: the data protection keychain (the
+        // plugin's default) needs a signed application identifier, which a
+        // CI build without a team does not have, and synchronizable items
+        // need the data protection keychain too.
+        usesDataProtectionKeychain: false,
+        synchronizable: false,
         // accessControlFlags: [ // Enable for one or more access control features
         //   AccessControlFlag.biometryCurrentSet,
         //   AccessControlFlag.devicePasscode,

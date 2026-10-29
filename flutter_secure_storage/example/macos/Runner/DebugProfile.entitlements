@@ -6,8 +6,9 @@
 	  No keychain-access-groups here. It is a restricted entitlement: a
 	  build signed without a provisioning profile (CI signs ad hoc) is
 	  killed by AMFI at launch, so the integration test never connects.
-	  The plugin's default macOS storage (the legacy file keychain, with no
-	  access group) needs no entitlement, so the default path is still tested.
+	  So the example uses the legacy file keychain (usesDataProtectionKeychain
+	  false), which needs no entitlement. The data protection keychain, the
+	  plugin's default, is only exercised by a signed build.
 	-->
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
