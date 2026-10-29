@@ -695,6 +695,7 @@ class FlutterSecureStorage {
 
             query[kSecValueData] = value.data(using: .utf8)
             let status = SecItemAdd(query as CFDictionary, nil)
+            print("FSS-DIAG add status=\(status) keyExists=\(keyExists) dp=\(params.usesDataProtectionKeychain) query=\(query.keys.map { $0 as String }) values=\(query.filter { $0.key != kSecValueData }.map { "\($0.key as String)=\($0.value)" })")
             return FlutterSecureStorageResponse(status: status, value: nil)
         }
 

@@ -52,9 +52,20 @@ jobs:
             echo "== $app"
             codesign -d --entitlements - "$app" 2>&1 || true
             codesign -dvv "$app" 2>&1 || true
-            (timeout 20 "$app/Contents/MacOS/"* ; echo "direct run exit=$?") 2>&1 | tail -20 || true
+            # Launch the binary directly; a launch killed by AMFI exits at once.
+            "$app/Contents/MacOS/"* > direct-run.log 2>&1 &
+            pid=$!
+            sleep 15
+            if kill -0 "$pid" 2>/dev/null; then
+              echo "direct run: still running after 15s"
+              kill "$pid" 2>/dev/null || true
+            else
+              wait "$pid"; echo "direct run: exited with $?"
+            fi
+            tail -20 direct-run.log || true
           done
-          log show --last 5m --predicate 'process == "amfid" OR eventMessage CONTAINS "taskgated"' 2>&1 | tail -150 || true
+          log show --last 3m --predicate 'process == "amfid" OR process == "taskgated" OR eventMessage CONTAINS "AMFI"' 2>&1 \
+            | grep -i "example\|AMFI\|taskgated" | tail -150 || true
 
   desktop-windows-x64:
     name: Windows x64
