@@ -878,7 +878,17 @@ class FlutterSecureStorage {
             modifiedParams.accessControlFlags = nil
 
             let query = baseQuery(from: modifiedParams)
-            return SecItemDelete(query as CFDictionary)
+            // SecItemDelete removes one matching item per call on the legacy
+            // keychain, even when the query matches several. Repeat the same query
+            // until nothing is left, so deleteAll removes every row.
+            let first = SecItemDelete(query as CFDictionary)
+            guard first == errSecSuccess else { return first }
+            for _ in 0..<10_000 {
+                let next = SecItemDelete(query as CFDictionary)
+                if next == errSecItemNotFound { return errSecSuccess }
+                if next != errSecSuccess { return next }
+            }
+            return errSecSuccess
         }
 
         // Without the data protection keychain there's no synchronizable item to
