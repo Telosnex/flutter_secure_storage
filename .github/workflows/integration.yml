@@ -60,12 +60,12 @@ jobs:
               echo "direct run: still running after 15s"
               kill "$pid" 2>/dev/null || true
             else
-              wait "$pid"; echo "direct run: exited with $?"
+              code=0; wait "$pid" || code=$?; echo "direct run: exited with $code"
             fi
             tail -20 direct-run.log || true
           done
-          log show --last 3m --predicate 'process == "amfid" OR process == "taskgated" OR eventMessage CONTAINS "AMFI"' 2>&1 \
-            | grep -i "example\|AMFI\|taskgated" | tail -150 || true
+          log show --last 3m --predicate 'process == "amfid" OR process == "taskgated" OR eventMessage CONTAINS "AMFI" OR eventMessage CONTAINS "FSS-DIAG"' 2>&1 \
+            | grep -i "example\|AMFI\|taskgated\|FSS-DIAG" | tail -150 || true
 
   desktop-windows-x64:
     name: Windows x64

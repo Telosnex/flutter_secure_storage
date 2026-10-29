@@ -695,7 +695,25 @@ class FlutterSecureStorage {
 
             query[kSecValueData] = value.data(using: .utf8)
             let status = SecItemAdd(query as CFDictionary, nil)
-            print("FSS-DIAG add status=\(status) keyExists=\(keyExists) dp=\(params.usesDataProtectionKeychain) query=\(query.keys.map { $0 as String }) values=\(query.filter { $0.key != kSecValueData }.map { "\($0.key as String)=\($0.value)" })")
+            if status != errSecSuccess {
+                // TEMPORARY diagnostics: which attribute makes SecItemAdd fail?
+                var variants: [(String, [CFString])] = [
+                    ("as-is", []),
+                    ("no-sync", [kSecAttrSynchronizable]),
+                    ("no-returndata", [kSecReturnData]),
+                    ("no-accessible", [kSecAttrAccessible]),
+                    ("no-service", [kSecAttrService]),
+                    ("no-account", [kSecAttrAccount]),
+                    ("only-class-value", [kSecAttrSynchronizable, kSecReturnData, kSecAttrAccessible, kSecAttrService]),
+                ]
+                for (name, drop) in variants {
+                    var v = query
+                    for k in drop { v.removeValue(forKey: k) }
+                    let vs = SecItemAdd(v as CFDictionary, nil)
+                    NSLog("FSS-DIAG variant %@ status=%d", name, vs)
+                }
+                NSLog("FSS-DIAG add status=%d keyExists=%@ dp=%@ keys=%@", status, String(describing: keyExists), String(describing: params.usesDataProtectionKeychain), query.keys.map { $0 as String }.joined(separator: ","))
+            }
             return FlutterSecureStorageResponse(status: status, value: nil)
         }
 
