@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:telosnex_web_test/telosnex_web_test.dart';
 
 /// Web-specific integration tests.
 ///
@@ -13,7 +14,8 @@ import 'package:integration_test/integration_test.dart';
 /// Run with:
 ///   flutter test integration_test/web_test.dart -d chrome
 void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  installWebTestSupport(binding);
 
   // Use sessionStorage-backed namespaces so test data never persists across
   // browser sessions.
