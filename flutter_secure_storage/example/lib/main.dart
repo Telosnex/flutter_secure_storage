@@ -56,7 +56,6 @@ class HomePageState extends State<HomePage> {
         // CI build without a team does not have, and synchronizable items
         // need the data protection keychain too.
         usesDataProtectionKeychain: false,
-        synchronizable: false,
         // accessControlFlags: [ // Enable for one or more access control features
         //   AccessControlFlag.biometryCurrentSet,
         //   AccessControlFlag.devicePasscode,
@@ -145,6 +144,7 @@ class HomePageState extends State<HomePage> {
   }
 
   void _handleInitializationError(PlatformException e) {
+    debugPrint('storage error: ${e.code}: ${e.message} ${e.details}');
     String userMessage;
     final technicalDetails = e.message ?? 'Unknown error';
 
