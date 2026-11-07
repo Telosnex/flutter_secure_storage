@@ -129,7 +129,7 @@ void main() {
     testWidgets('Add a Random Row', (tester) async {
       final pageObject = await _setupHomePage(tester);
       await pageObject.addRandomRow();
-      pageObject.verifyRowExists(0);
+      await pageObject.verifyRowExists(0);
     });
 
     testWidgets('Edit a Row Value', (tester) async {
@@ -143,7 +143,7 @@ void main() {
       final pageObject = await _setupHomePage(tester);
       await pageObject.addRandomRow();
       await pageObject.deleteRow(0);
-      pageObject.verifyRowDoesNotExist(0);
+      await pageObject.verifyRowDoesNotExist(0);
     });
 
     testWidgets('Check Protected Data Availability', (tester) async {
@@ -171,9 +171,8 @@ void main() {
       final pageObject = await _setupHomePage(tester);
       await pageObject.addRandomRow();
       await pageObject.addRandomRow();
-      pageObject
-        ..verifyRowExists(0)
-        ..verifyRowExists(1);
+      await pageObject.verifyRowExists(0);
+      await pageObject.verifyRowExists(1);
     });
 
     testWidgets('Edit Multiple Rows', (tester) async {
@@ -192,9 +191,8 @@ void main() {
       await pageObject.addRandomRow();
       await pageObject.addRandomRow();
       await pageObject.deleteAll();
-      pageObject
-        ..verifyRowDoesNotExist(0)
-        ..verifyRowDoesNotExist(1);
+      await pageObject.verifyRowDoesNotExist(0);
+      await pageObject.verifyRowDoesNotExist(1);
     });
 
     testWidgets('Enclave requested on iOS Simulator falls back gracefully',
@@ -709,20 +707,27 @@ class HomePageObject {
     );
   }
 
-  void verifyRowExists(int index) {
-    expect(
-      find.byKey(Key('value_row_$index')),
-      findsOneWidget,
-      reason: 'Expected row $index to exist',
-    );
+  Future<void> verifyRowExists(int index) async {
+    final row = find.byKey(Key('value_row_$index'));
+    await _waitFor(() => row.evaluate().length == 1);
+    expect(row, findsOneWidget, reason: 'Expected row $index to exist');
   }
 
-  void verifyRowDoesNotExist(int index) {
-    expect(
-      find.byKey(Key('value_row_$index')),
-      findsNothing,
-      reason: 'Expected row $index to be absent',
-    );
+  Future<void> verifyRowDoesNotExist(int index) async {
+    final row = find.byKey(Key('value_row_$index'));
+    await _waitFor(() => row.evaluate().isEmpty);
+    expect(row, findsNothing, reason: 'Expected row $index to be absent');
+  }
+
+  /// Pumps until [done], for up to 10 s. pumpAndSettle does not wait for a
+  /// platform call: the first keychain write after the simulator boots can
+  /// take seconds, and the list updates after it.
+  Future<void> _waitFor(bool Function() done) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (!done() && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await tester.pump();
+    }
   }
 
   Future<void> _tap(Finder finder) async {
