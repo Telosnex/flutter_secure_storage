@@ -30,7 +30,7 @@ jobs:
     name: macOS ARM64
     runs-on: macos-15
     timeout-minutes: 30
-    steps:
+    steps: &macos_steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -67,6 +67,14 @@ jobs:
           done
           log show --last 3m --predicate 'process == "amfid" OR process == "taskgated" OR eventMessage CONTAINS "AMFI" OR eventMessage CONTAINS "FSS-DIAG"' 2>&1 \
             | grep -i "example\|AMFI\|taskgated\|FSS-DIAG" | tail -150 || true
+
+  # The steps of macOS ARM64 on an Intel runner: the app ships a universal
+  # macOS build.
+  desktop-macos-x64:
+    name: macOS x64
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    steps: *macos_steps
 
   desktop-windows-x64:
     name: Windows x64
