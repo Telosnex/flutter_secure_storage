@@ -222,6 +222,9 @@ class HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      // The dialogs' text fields open the keyboard; the list does not need
+      // to fit above it, and the Column overflowed (iOS simulator).
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         title: const Text('Plugin example app'),
         actions: <Widget>[

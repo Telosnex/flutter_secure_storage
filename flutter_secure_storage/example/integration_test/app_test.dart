@@ -615,9 +615,22 @@ class HomePageObject {
     await _tap(_deleteAllButton);
   }
 
+  /// Adds a row, and waits until the list shows it.
   Future<void> addRandomRow() async {
+    final before = _rowCount();
     await _tap(_addRandomButton);
+    await _waitFor(() => _rowCount() > before);
+    expect(_rowCount(), before + 1, reason: 'The new row did not appear');
   }
+
+  int _rowCount() => find
+      .byWidgetPredicate(
+        (w) =>
+            w.key is ValueKey<String> &&
+            (w.key! as ValueKey<String>).value.startsWith('value_row_'),
+      )
+      .evaluate()
+      .length;
 
   Future<void> editValue(String newValue, int index) async {
     await _tap(find.byKey(Key('popup_row_$index')));
