@@ -67,6 +67,12 @@ jobs:
           done
           log show --last 3m --predicate 'process == "amfid" OR process == "taskgated" OR eventMessage CONTAINS "AMFI" OR eventMessage CONTAINS "FSS-DIAG"' 2>&1 \
             | grep -i "example\|AMFI\|taskgated\|FSS-DIAG" | tail -150 || true
+          # A crash of the app during the tests.
+          for report in ~/Library/Logs/DiagnosticReports/example*; do
+            [[ -f "$report" ]] || continue
+            echo "== $report"
+            head -80 "$report"
+          done
 
   # The steps of macOS ARM64 on an Intel runner: the app ships a universal
   # macOS build. Xcode 26.3 is the Xcode of the app's release; the image's
