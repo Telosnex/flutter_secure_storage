@@ -30,7 +30,7 @@ jobs:
     name: macOS ARM64
     runs-on: macos-15
     timeout-minutes: 30
-    steps: &macos_steps
+    steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -78,7 +78,7 @@ jobs:
     name: Windows x64
     runs-on: windows-2025
     timeout-minutes: 30
-    steps:
+    steps: &windows_steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -92,6 +92,12 @@ jobs:
           idle-minutes: 15
           working-directory: ${{ env.EXAMPLE }}
           run: flutter test -r expanded integration_test/windows_test.dart -d windows
+
+  desktop-windows-arm64:
+    name: Windows ARM64
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps: *windows_steps
 
   desktop-linux-x64:
     name: Linux x64
