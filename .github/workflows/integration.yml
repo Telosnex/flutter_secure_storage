@@ -74,17 +74,6 @@ jobs:
             head -80 "$report"
           done
 
-  # The steps of macOS ARM64 on an Intel runner: the app ships a universal
-  # macOS build. Xcode 26.3 is the Xcode of the app's release; the image's
-  # default, 16.4, has no macOS 26 SDK.
-  desktop-macos-x64:
-    name: macOS x64
-    runs-on: macos-15-intel
-    timeout-minutes: 30
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-    steps: *macos_steps
-
   desktop-windows-x64:
     name: Windows x64
     runs-on: windows-2025
