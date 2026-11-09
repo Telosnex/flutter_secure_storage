@@ -596,6 +596,7 @@ Future<HomePageObject> _setupHomePage(WidgetTester tester) async {
   await tester.pumpWidget(const MaterialApp(home: HomePage()));
   await tester.pumpAndSettle(duration);
   final pageObject = HomePageObject(tester);
+  await pageObject._waitForStorage();
   await pageObject.deleteAll();
   return pageObject;
 }
@@ -613,6 +614,7 @@ class HomePageObject {
   Future<void> deleteAll() async {
     await _tap(_popupMenuButton);
     await _tap(_deleteAllButton);
+    expect(_rowCount(), 0, reason: 'Rows remain after delete all');
   }
 
   /// Adds a row, and waits until the list shows it.
@@ -642,9 +644,6 @@ class HomePageObject {
     await tester.pumpAndSettle(duration);
 
     await _tap(find.byKey(const Key('save')));
-
-    await Future<void>.delayed(const Duration(seconds: 1));
-    await tester.pumpAndSettle(duration);
   }
 
   Future<void> deleteRow(int index) async {
@@ -675,8 +674,7 @@ class HomePageObject {
     await tester.pumpAndSettle(duration);
 
     // Confirm the action
-    await tester.tap(find.text('OK'));
-    await tester.pumpAndSettle(duration);
+    await _tap(find.text('OK'));
 
     // Verify the SnackBar message
     final expectedText = 'Contains Key: $expectedResult';
@@ -701,8 +699,7 @@ class HomePageObject {
     await tester.pumpAndSettle(duration);
 
     // Confirm the action
-    await tester.tap(find.text('OK'));
-    await tester.pumpAndSettle(duration);
+    await _tap(find.text('OK'));
 
     // Verify the SnackBar message
     expect(find.text('value: $expectedValue'), findsOneWidget);
@@ -732,6 +729,15 @@ class HomePageObject {
     expect(row, findsNothing, reason: 'Expected row $index to be absent');
   }
 
+  /// Waits until the app has no storage call in flight. The app starts
+  /// them without waiting, and pumpAndSettle does not wait for them.
+  Future<void> _waitForStorage() async {
+    final state = tester.state<HomePageState>(find.byType(HomePage));
+    await _waitFor(() => !state.busy);
+    expect(state.busy, isFalse, reason: 'A storage call took over 10 s');
+    await tester.pumpAndSettle(duration);
+  }
+
   /// Pumps until [done], for up to 10 s. pumpAndSettle does not wait for a
   /// platform call: the first keychain write after the simulator boots can
   /// take seconds, and the list updates after it.
@@ -751,5 +757,6 @@ class HomePageObject {
     );
     await tester.tap(finder);
     await tester.pumpAndSettle(duration);
+    await _waitForStorage();
   }
 }

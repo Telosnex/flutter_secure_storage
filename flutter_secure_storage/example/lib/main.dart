@@ -1,7 +1,8 @@
 import 'dart:async' show unawaited;
 import 'dart:math' show Random;
 
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -33,6 +34,27 @@ class HomePageState extends State<HomePage> {
 
   final List<_SecItem> _items = [];
   String _errorMessage = '';
+
+  // Storage calls in flight. The UI starts them without waiting, so the
+  // integration test waits on [busy] instead of on frames.
+  int _pending = 0;
+
+  // Only the newest readAll may update the list: an older one can finish
+  // later and show items that a delete already removed.
+  int _readGeneration = 0;
+
+  /// Whether a storage call is still running.
+  @visibleForTesting
+  bool get busy => _pending > 0;
+
+  Future<T> _io<T>(Future<T> Function() call) async {
+    _pending++;
+    try {
+      return await call();
+    } finally {
+      _pending--;
+    }
+  }
 
   void _initializeFlutterSecureStorage(String accountName) {
     _storage = FlutterSecureStorage(
@@ -91,7 +113,9 @@ class HomePageState extends State<HomePage> {
 
   Future<void> _readAll() async {
     try {
-      final all = await _storage.readAll();
+      final generation = ++_readGeneration;
+      final all = await _io(_storage.readAll);
+      if (!mounted || generation != _readGeneration) return;
       setState(() {
         _items
           ..clear()
@@ -108,7 +132,7 @@ class HomePageState extends State<HomePage> {
 
   Future<void> _deleteAll() async {
     try {
-      await _storage.deleteAll();
+      await _io(_storage.deleteAll);
       await _readAll();
     } on PlatformException catch (e) {
       _handleInitializationError(e);
@@ -118,7 +142,7 @@ class HomePageState extends State<HomePage> {
   Future<void> _isProtectedDataAvailable() async {
     final scaffold = ScaffoldMessenger.of(context);
     try {
-      final result = await _storage.isCupertinoProtectedDataAvailable();
+      final result = await _io(_storage.isCupertinoProtectedDataAvailable);
 
       scaffold.showSnackBar(
         SnackBar(
@@ -133,9 +157,11 @@ class HomePageState extends State<HomePage> {
 
   Future<void> _addNewItem() async {
     try {
-      await _storage.write(
-        key: DateTime.timestamp().microsecondsSinceEpoch.toString(),
-        value: _randomValue(),
+      await _io(
+        () => _storage.write(
+          key: DateTime.timestamp().microsecondsSinceEpoch.toString(),
+          value: _randomValue(),
+        ),
       );
       await _readAll();
     } on PlatformException catch (e) {
@@ -380,9 +406,7 @@ class HomePageState extends State<HomePage> {
     try {
       switch (action) {
         case _ItemActions.delete:
-          await _storage.delete(
-            key: item.key,
-          );
+          await _io(() => _storage.delete(key: item.key));
           await _readAll();
         case _ItemActions.edit:
           if (!context.mounted) return;
@@ -391,15 +415,12 @@ class HomePageState extends State<HomePage> {
             builder: (_) => _EditItemWidget(item.value),
           );
           if (result != null) {
-            await _storage.write(
-              key: item.key,
-              value: result,
-            );
+            await _io(() => _storage.write(key: item.key, value: result));
             await _readAll();
           }
         case _ItemActions.containsKey:
           final key = await _displayTextInputDialog(context, item.key);
-          final result = await _storage.containsKey(key: key);
+          final result = await _io(() => _storage.containsKey(key: key));
           if (!context.mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -409,7 +430,7 @@ class HomePageState extends State<HomePage> {
           );
         case _ItemActions.read:
           final key = await _displayTextInputDialog(context, item.key);
-          final result = await _storage.read(key: key);
+          final result = await _io(() => _storage.read(key: key));
           if (!context.mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -430,6 +451,8 @@ class HomePageState extends State<HomePage> {
     await showDialog<dynamic>(
       context: context,
       builder: (context) => AlertDialog(
+        // The keyboard can leave less height than the dialog needs.
+        scrollable: true,
         title: const Text('Check if key exists'),
         actions: [
           TextButton(
@@ -464,6 +487,8 @@ class _EditItemWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
+      // The keyboard can leave less height than the dialog needs.
+      scrollable: true,
       title: const Text('Edit item'),
       content: TextField(
         key: const Key('value_field'),
