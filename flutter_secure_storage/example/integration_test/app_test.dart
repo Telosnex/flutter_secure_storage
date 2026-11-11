@@ -667,11 +667,15 @@ class HomePageObject {
     expect(keyFinder, findsOneWidget, reason: 'Row $index not found');
     final keyWidget = tester.widget<Text>(keyFinder);
 
-    // Enter key in the dialog
+    // The dialog opens with the row's key. Typing it again would show the
+    // keyboard, which can leave the dialog too little height: on the iOS
+    // simulator its column overflowed (11-09, 11-11).
     final textField = find.byKey(const Key('key_field'));
     expect(textField, findsOneWidget);
-    await tester.enterText(textField, keyWidget.data!);
-    await tester.pumpAndSettle(duration);
+    expect(
+      tester.widget<TextField>(textField).controller!.text,
+      keyWidget.data,
+    );
 
     // Confirm the action
     await _tap(find.text('OK'));
@@ -692,11 +696,15 @@ class HomePageObject {
     expect(keyFinder, findsOneWidget, reason: 'Row $index not found');
     final keyWidget = tester.widget<Text>(keyFinder);
 
-    // Enter key in the dialog
+    // The dialog opens with the row's key. Typing it again would show the
+    // keyboard, which can leave the dialog too little height: on the iOS
+    // simulator its column overflowed (11-09, 11-11).
     final textField = find.byKey(const Key('key_field'));
     expect(textField, findsOneWidget);
-    await tester.enterText(textField, keyWidget.data!);
-    await tester.pumpAndSettle(duration);
+    expect(
+      tester.widget<TextField>(textField).controller!.text,
+      keyWidget.data,
+    );
 
     // Confirm the action
     await _tap(find.text('OK'));
