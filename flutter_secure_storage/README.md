@@ -377,6 +377,9 @@ You need the C++ ATL libraries installed along with the rest of Visual Studio Bu
 
 ### Linux
 
+When building with Flutter 3.50, see the [Linux runner workaround](https://github.com/Telosnex/flutter_secure_storage/blob/develop/flutter_secure_storage_linux/README.md#flutter-350-linux-catchable-keyring-failures)
+for an upstream engine issue that can make keyring failures abort the app.
+
 #### Requirements
 
 These requirements are typically already satisfied by default on most Linux desktop environments.

@@ -125,6 +125,12 @@ jobs:
               echo "" | gnome-keyring-daemon --unlock --daemonize --components=secrets
               xvfb-run -a flutter test -r expanded integration_test/linux_test.dart -d linux
             '
+            # Point libsecret at an unreachable private D-Bus socket: it
+            # must report a platform exception rather than aborting the runner.
+            missing_bus_dir=$(mktemp -d)
+            trap 'rmdir "$missing_bus_dir"' EXIT
+            DBUS_SESSION_BUS_ADDRESS="unix:path=$missing_bus_dir/bus" \
+              xvfb-run -a flutter test -r expanded integration_test/linux_no_keyring_test.dart -d linux
 
   desktop-linux-arm64:
     name: Linux ARM64
@@ -152,6 +158,12 @@ jobs:
               echo "" | gnome-keyring-daemon --unlock --daemonize --components=secrets
               xvfb-run -a flutter test -r expanded integration_test/linux_test.dart -d linux
             '
+            # Point libsecret at an unreachable private D-Bus socket: it
+            # must report a platform exception rather than aborting the runner.
+            missing_bus_dir=$(mktemp -d)
+            trap 'rmdir "$missing_bus_dir"' EXIT
+            DBUS_SESSION_BUS_ADDRESS="unix:path=$missing_bus_dir/bus" \
+              xvfb-run -a flutter test -r expanded integration_test/linux_no_keyring_test.dart -d linux
 
   android:
     name: Android x64 emulator

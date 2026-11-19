@@ -79,6 +79,27 @@ Apart from libsecret, a running keyring service is required at runtime. This is 
   echo "" | gnome-keyring-daemon --unlock --daemonize --components=secrets
   ```
 
+### Flutter 3.50 Linux: catchable keyring failures
+
+[Flutter issue #196402](https://github.com/flutter/flutter/issues/196402) can
+make an app abort on Linux when the native plugin handles an unavailable or
+locked keyring. Affected Flutter engines export their own C++ unwinder. To
+retain the usual `PlatformException` instead of a process abort, add the
+following to the **app runner's** `linux/runner/CMakeLists.txt` (or
+`linux/CMakeLists.txt` if that file defines the runner target), after the
+`add_executable` for `${BINARY_NAME}`:
+
+```cmake
+target_link_options(${BINARY_NAME} PRIVATE
+  "LINKER:--push-state,--no-as-needed,-lgcc_s,--pop-state")
+```
+
+This requires CMake 3.13 or newer and applies to builds using the Linux GTK
+engine (debug, profile, and release). Rebuild the app; the setting must affect
+the executable, not just the plugin library. The example runner includes it.
+Remove the setting after upgrading to a Flutter engine that no longer exports
+the conflicting `_Unwind_*` symbols and verifying the keyring error path.
+
 ## Known issues
 
 ### Flutter installed via snap on Ubuntu 22.04+
