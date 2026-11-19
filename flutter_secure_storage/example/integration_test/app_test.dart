@@ -1,5 +1,7 @@
 import 'dart:io' show Platform;
 
+// Keep this example compatible with older Flutter SDKs.
+// ignore: deprecated_member_use
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_secure_storage_example/main.dart';
